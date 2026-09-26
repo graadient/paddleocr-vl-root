@@ -1,0 +1,56 @@
+name: publish
+on: workflow_dispatch
+permissions:
+  contents: read
+  packages: write
+env:
+  BASE: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-vl@sha256:f5dff380c63636a9fb551877d2011ef6c4a939b2c06054854f83d399245f37ba
+  TARGET: ghcr.io/${{ github.repository_owner }}/paddleocr-vl-root
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Install crane (pinned release, checksum verified)
+        run: |
+          set -euo pipefail
+          V=v0.20.2
+          curl -fsSL -o go-containerregistry.tar.gz "https://github.com/google/go-containerregistry/releases/download/${V}/go-containerregistry_Linux_x86_64.tar.gz"
+          curl -fsSL -o checksums.txt "https://github.com/google/go-containerregistry/releases/download/${V}/checksums.txt"
+          grep ' go-containerregistry_Linux_x86_64.tar.gz$' checksums.txt | sed 's/go-containerregistry_Linux_x86_64.tar.gz/go-containerregistry.tar.gz/' | sha256sum -c -
+          tar -xzf go-containerregistry.tar.gz crane
+          sudo mv crane /usr/local/bin/crane
+          crane version
+      - name: Log in to GHCR with the job token
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
+      - name: Copy the base by digest (registry to registry)
+        run: |
+          set -euo pipefail
+          for i in 1 2 3; do crane copy --platform linux/amd64 "$BASE" "$TARGET:base-f5dff380" && break; echo "retry $i"; sleep 30; done
+          crane digest "$TARGET:base-f5dff380" | tee base-copied.digest
+          test "$(cat base-copied.digest)" = "sha256:f5dff380c63636a9fb551877d2011ef6c4a939b2c06054854f83d399245f37ba"
+      - name: Config-only mutation (USER root, HOME=/root)
+        run: |
+          set -euo pipefail
+          crane mutate "$TARGET:base-f5dff380" \
+            --user root --env HOME=/root \
+            --label org.opencontainers.image.source="https://github.com/${{ github.repository }}" \
+            --label org.opencontainers.image.base.name="ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-vl" \
+            --label org.opencontainers.image.base.digest="sha256:f5dff380c63636a9fb551877d2011ef6c4a939b2c06054854f83d399245f37ba" \
+            -t "$TARGET:3.4-root-f5dff380"
+          echo "DIGEST $(crane digest "$TARGET:3.4-root-f5dff380")"
+          crane config "$TARGET:3.4-root-f5dff380" > derived-config.json
+          crane manifest "$TARGET:3.4-root-f5dff380" > derived-manifest.json
+          crane config "$TARGET:base-f5dff380" > base-config.json
+          crane manifest "$TARGET:base-f5dff380" > base-manifest.json
+          python3 - <<'PY'
+          import json
+          b=json.load(open('base-manifest.json')); d=json.load(open('derived-manifest.json'))
+          assert [l['digest'] for l in b['layers']]==[l['digest'] for l in d['layers']], 'layers differ'
+          c=json.load(open('derived-config.json'))['config']; print('User',c.get('User'),'HOME',[e for e in c.get('Env',[]) if e.startswith('HOME=')])
+          assert c.get('User')=='root' and 'HOME=/root' in c.get('Env',[])
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: provenance
+          path: "*.json\n*.digest"

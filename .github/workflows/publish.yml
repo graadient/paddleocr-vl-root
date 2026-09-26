@@ -50,7 +50,7 @@ jobs:
           c=json.load(open('derived-config.json'))['config']; print('User',c.get('User'),'HOME',[e for e in c.get('Env',[]) if e.startswith('HOME=')])
           assert c.get('User')=='root' and 'HOME=/root' in c.get('Env',[])
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: provenance
           path: "*.json\n*.digest"
